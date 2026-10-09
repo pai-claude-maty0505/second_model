@@ -39,8 +39,9 @@ TRAY_HALF = 0.045 - 0.008
 HOME = np.array([0.0, -1.5, 0.6, 1.6, 0.0, 0.02])   # rad x5, finger opening (m)
 GRIP_OPEN, GRIP_CLOSED = 0.030, 0.0                  # closed target is inside the block -> squeeze
 GRASP_Z = 0.012          # TCP height when grasping (fingertips ~4 mm above the table)
-CARRY_Z = 0.080
-PLACE_Z = 0.050
+CARRY_Z = 0.070           # lift height above the block
+TRAY_Z = 0.065            # height when moving over the tray (wrist_flex limit)
+PLACE_Z = 0.045
 BLOCK_X = (0.17, 0.25)
 BLOCK_Y = (-0.08, 0.05)
 
@@ -203,14 +204,18 @@ class TaskNode(Node):
         k, b = self.kin, self.block_xyz
         jit = lambda: rng.uniform(-0.003, 0.003, 3) * np.array([1, 1, 0])
         def ik(p, q0=None):
-            q, ok = k.ik(p, q0=q0)
-            if not ok:
-                raise RuntimeError(f"IK failed for {p}")
-            return q
+            # several initial guesses: the damped least-squares IK can get stuck in a local minimum
+            seeds = [q0, None] + [np.array([np.arctan2(p[1], p[0]) * sg, rng.uniform(-1.0, 0.0), rng.uniform(0.0, 1.0), 1.2, 0.0])
+                                  for sg in (1, -1) for _ in range(3)]
+            for s0 in seeds:
+                q, ok = k.ik(p, q0=None if s0 is None else np.array(s0, float))
+                if ok:
+                    return q
+            raise RuntimeError(f"IK failed for {p}")
         above = ik(np.array([b[0], b[1], CARRY_Z]) + jit())
         grasp = ik(np.array([b[0], b[1], GRASP_Z]), q0=above.copy())
         lift = ik(np.array([b[0], b[1], CARRY_Z]), q0=grasp.copy())
-        t = np.array([*(TRAY_XY + rng.uniform(-0.01, 0.01, 2)), CARRY_Z])
+        t = np.array([*(TRAY_XY + rng.uniform(-0.01, 0.01, 2)), TRAY_Z])
         over_tray = ik(t)
         place = ik(np.array([t[0], t[1], PLACE_Z]), q0=over_tray.copy())
         g = lambda q, gr: np.concatenate([q, [gr]])
@@ -219,7 +224,7 @@ class TaskNode(Node):
                g(place, GRIP_OPEN), g(over_tray, GRIP_OPEN), HOME.copy()]
         r = lambda n: int(n + rng.integers(-2, 3))
         #        home>above above>grasp close hold lift  >tray  down  open  up  home
-        steps = [r(14),      r(10),      4,    4,   r(10), r(14), 6,    4,    5,  r(12)]
+        steps = [r(14),      r(10),      4,    6,   r(14), r(18), 6,    4,    5,  r(12)]
         traj = lerp_traj(wps, steps)
         traj += [HOME.copy()] * 5
         return traj

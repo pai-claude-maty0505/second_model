@@ -6,6 +6,8 @@ Differences from the first model
   prismatic joints (each finger has its own force-limited position controller).
 - The block is a rigid body that **collides with the fingers**; it is held only by
   the friction produced by squeezing it (no DetachableJoint / no "grasp assist").
+- Each finger has a 3 mm rubber pad (high friction) on its inner face; the finger body
+  tapers in 10 small steps toward a rounded tip.
 
 Steps
 1. Patch the official SO-101 URDF: absolute mesh paths, fix base to world,
@@ -31,13 +33,16 @@ BLOCK_SIZE = 0.025
 BLOCK_MASS = 0.03
 TRAY_XY = (0.10, 0.20)
 TRAY_SIZE = 0.09
-FRICTION = 1.5
+FRICTION = 5.0          # block and rubber pads (high-friction rubber)
+FRICTION_BODY = 1.0     # palm / finger body (plastic)
 
 # Gripper geometry in the gripper_link frame (its -z axis points from the wrist toward the fingertips;
 # the original tool frame "gripper_frame_link" is at (-0.0079, 0, -0.0981) and is kept as the TCP).
 CX = -0.0079                # centre line of the gripper (x) = TCP x
 FINGER_Z = -0.081           # finger centre height  (fingers span z = -0.056 ... -0.106)
-FINGER_SIZE = (0.010, 0.022, 0.050)   # thickness (closing axis), width, length
+FINGER_LEN, FINGER_W = 0.050, 0.022   # finger length (z) and width (y)
+PAD_T, PAD_W, PAD_LEN = 0.003, 0.020, 0.036   # rubber pad on the inner face: thickness, width, length
+N_STEPS = 10                # finger body taper: number of thickness steps from root to tip
 
 
 def _box_part(parent, xyz, size, material):
@@ -48,6 +53,45 @@ def _box_part(parent, xyz, size, material):
         ET.SubElement(g, "box", size=" ".join(f"{v:.5f}" for v in size))
         if tag == "visual":
             ET.SubElement(e, "material", name=material)
+
+
+def _geom(parent, tag, xyz, shape, rpy="0 0 0", material=None, name=None):
+    e = ET.SubElement(parent, tag, **({"name": name} if name else {}))
+    ET.SubElement(e, "origin", xyz=" ".join(f"{v:.5f}" for v in xyz), rpy=rpy)
+    g = ET.SubElement(e, "geometry")
+    kind, attrs = shape
+    ET.SubElement(g, kind, **attrs)
+    if material:
+        ET.SubElement(e, "material", name=material)
+
+
+def _add_finger(link, sign):
+    """One finger in its joint frame (inner contact surface at x = 0, body extends to sign*x, tip toward -z).
+
+    - rubber pad (3 mm, black, high friction) on the inner face; its long edges are rounded
+    - finger body tapers in N_STEPS (10) steps toward the tip (10 -> 6 mm) and ends in a rounded tip
+    Collisions are kept simple (pad box + body box) so that contacts stay stable.
+    """
+    L, W = FINGER_LEN, FINGER_W
+    box = lambda sx, sy, sz: ("box", {"size": f"{sx:.5f} {sy:.5f} {sz:.5f}"})
+    cyl = lambda r, l: ("cylinder", {"radius": f"{r:.5f}", "length": f"{l:.5f}"})
+    pad_z = -L / 2 + 0.002 + PAD_LEN / 2                      # pad from 2 mm above the tip upward
+    # --- collisions
+    _geom(link, "collision", (sign * PAD_T / 2, 0, pad_z), box(PAD_T, PAD_W, PAD_LEN), name="rubber_pad")
+    _geom(link, "collision", (sign * (PAD_T + 0.003), 0, 0), box(0.006, W, L), name="finger_body")
+    # --- visuals: rubber pad with rounded long edges
+    r = PAD_T / 2
+    _geom(link, "visual", (sign * PAD_T / 2, 0, pad_z), box(PAD_T, PAD_W - 2 * r, PAD_LEN), material="rubber_black")
+    for yy in (-(PAD_W / 2 - r), PAD_W / 2 - r):
+        _geom(link, "visual", (sign * PAD_T / 2, yy, pad_z), cyl(r, PAD_LEN), material="rubber_black")
+    # --- visuals: body tapering smoothly in N_STEPS steps (10 -> 6 mm, thickness measured outward from the pad)
+    z0, z1 = L / 2, -L / 2 + 0.003
+    segs = [(0.010 - 0.004 * i / (N_STEPS - 1), z0 + (z1 - z0) * i / N_STEPS, z0 + (z1 - z0) * (i + 1) / N_STEPS)
+            for i in range(N_STEPS)]
+    for t, z_top, z_bot in segs:
+        _geom(link, "visual", (sign * (PAD_T + t / 2), 0, (z_top + z_bot) / 2), box(t, W, z_top - z_bot), material="finger_dark")
+    # rounded tip (cylinder along y)
+    _geom(link, "visual", (sign * (PAD_T + 0.003), 0, -L / 2 + 0.003), cyl(0.003, W), rpy="1.5708 0 0", material="finger_dark")
 
 
 def patch_urdf(src, dst, mesh_dir):
@@ -76,14 +120,15 @@ def patch_urdf(src, dst, mesh_dir):
     ET.SubElement(mat, "color", rgba="0.25 0.25 0.28 1")
     _box_part(glink, (-0.002, 0.0, -0.040), (0.060, 0.036, 0.016), "3d_printed")   # palm
     _box_part(glink, (CX, 0.0, -0.052), (0.082, 0.026, 0.008), "3d_printed")       # rail
+    rub = ET.SubElement(root, "material", name="rubber_black")
+    ET.SubElement(rub, "color", rgba="0.05 0.05 0.05 1")
     for name, sign in (("finger_left", -1.0), ("finger_right", 1.0)):
         link = ET.SubElement(root, "link", name=f"{name}_link")
         inert = ET.SubElement(link, "inertial")
         ET.SubElement(inert, "origin", xyz="0 0 0", rpy="0 0 0")
         ET.SubElement(inert, "mass", value="0.02")
         ET.SubElement(inert, "inertia", ixx="5e-6", ixy="0", ixz="0", iyy="5e-6", iyz="0", izz="1e-6")
-        # finger inner surface is at the joint origin; the body extends outward
-        _box_part(link, (sign * FINGER_SIZE[0] / 2, 0.0, 0.0), FINGER_SIZE, "finger_dark")
+        _add_finger(link, sign)
         j = ET.SubElement(root, "joint", name=name, type="prismatic")
         ET.SubElement(j, "origin", xyz=f"{CX} 0 {FINGER_Z}", rpy="0 0 0")
         ET.SubElement(j, "parent", link="gripper_link")
@@ -130,9 +175,12 @@ def post_process_sdf(sdf_in, sdf_out):
     # Arm links (meshes): category 0x04, which nothing else accepts -> the arm never hits table/tray/block.
     # Gripper parts (boxes: palm, rail, fingers): 0x02 -> they DO collide with the block, the tray walls
     # and the table, so the block can only be lifted by squeezing it with friction.
+    # Rubber pads (box 3 mm thick) get high friction; palm / finger bodies normal plastic friction.
     for col in model.iter("collision"):
-        if col.find("geometry/box") is not None:
-            _surface(col, "0x02", FRICTION)
+        b = col.find("geometry/box/size")
+        if b is not None:
+            is_pad = abs(float(b.text.split()[0]) - PAD_T) < 1e-4
+            _surface(col, "0x02", FRICTION if is_pad else FRICTION_BODY)
         else:
             _surface(col, "0x04")
     for j in model.iter("joint"):
@@ -155,7 +203,7 @@ def post_process_sdf(sdf_in, sdf_out):
         plugin(model, "gz-sim-joint-position-controller-system",
                "gz::sim::systems::JointPositionController",
                joint_name=jn, topic=f"/so101/{jn}/cmd",
-               p_gain=400, i_gain=0, d_gain=4, cmd_max=8, cmd_min=-8,
+               p_gain=1500, i_gain=0, d_gain=10, cmd_max=15, cmd_min=-15,
                initial_position=HOME_FINGER)
     plugin(model, "gz-sim-joint-state-publisher-system",
            "gz::sim::systems::JointStatePublisher", topic="/so101/joint_states")
