@@ -36,7 +36,7 @@ Physical AI 講座 2026 応用編1（omnicampus: maty0505）。
 | ファイル | 内容 |
 |---|---|
 | `PAI_second_SO101_parallel_gripper.ipynb` | Colab ノートブック（全工程を順に実行） |
-| `docs/説明資料_PAI最終課題_maty0505_第2版.pdf` | 説明資料（レポート） |
+| `docs/説明資料_PAI最終課題_maty0505.pdf` | 説明資料（レポート） |
 | `sim/build_sim.py` | URDF の改造（2本指グリッパ）、URDF→SDF 変換、衝突・摩擦・コントローラ設定、ワールド生成 |
 | `sim/so101_task_node.py` | ROS 2 ノード（データ収集 / ポリシー実行、実際のブロック位置による成功判定） |
 | `sim/so101_kin.py` | URDF を直接読む FK/IK |
