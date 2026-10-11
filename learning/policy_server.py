@@ -36,9 +36,18 @@ def recv_msg(sock):
 
 
 class PolicyRunner:
-    def __init__(self, ckpt, device):
+    def __init__(self, ckpt, device, n_action_steps=None, temporal_ensemble=None):
         self.device = torch.device(device)
         self.policy = ACTPolicy.from_pretrained(ckpt).to(self.device).eval()
+        cfg = self.policy.config
+        if temporal_ensemble is not None:       # predict every step and average the overlapping chunks
+            from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
+            cfg.temporal_ensemble_coeff = temporal_ensemble
+            cfg.n_action_steps = 1
+            self.policy.temporal_ensembler = ACTTemporalEnsembler(temporal_ensemble, cfg.chunk_size)
+        elif n_action_steps is not None:        # re-plan more often than in training
+            cfg.n_action_steps = n_action_steps
+        print("inference: n_action_steps =", cfg.n_action_steps, "| temporal_ensemble =", cfg.temporal_ensemble_coeff, flush=True)
         self.pre, self.post = make_pre_post_processors(self.policy.config, pretrained_path=ckpt,
                                                        preprocessor_overrides={"device_processor": {"device": device}})
 
@@ -62,8 +71,10 @@ def main():
     ap.add_argument("--ckpt", required=True, help=".../checkpoints/last/pretrained_model")
     ap.add_argument("--port", type=int, default=5555)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--n_action_steps", type=int, default=None, help="override: execute this many steps of each chunk")
+    ap.add_argument("--temporal_ensemble", type=float, default=None, help="ACT temporal ensembling coefficient (e.g. 0.01)")
     a = ap.parse_args()
-    runner = PolicyRunner(a.ckpt, a.device)
+    runner = PolicyRunner(a.ckpt, a.device, a.n_action_steps, a.temporal_ensemble)
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", a.port))
